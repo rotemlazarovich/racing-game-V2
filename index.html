@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Monitor</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            background-color: gray; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            font-family: sans-serif;
+        }
+        #status { font-size: 50px; color: white; }
+    </style>
+</head>
+<body>
+    <div id="status">HAND DOWN</div>
+
+    <script>
+        const socket = io('http://localhost:5000');
+        const statusDiv = document.getElementById('status');
+
+        socket.on('game_action', (data) => {
+            if (data.action === 'up') {
+                document.body.style.backgroundColor = "green";
+                statusDiv.innerText = "HAND UP";
+            } else {
+                document.body.style.backgroundColor = "gray";
+                statusDiv.innerText = "HAND DOWN";
+            }
+        });
+    </script>
+</body>
+</html>

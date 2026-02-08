@@ -1,9 +1,12 @@
+import time
 import socketio
 import eventlet
 import base64
 import cv2
 import numpy as np
 import mediapipe as mp
+
+hand_is_currently_up = False
 
 # Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
@@ -14,6 +17,7 @@ app = socketio.WSGIApp(sio)
 
 @sio.on('video_frame')
 def handle_video_frame(sid, data):
+    global hand_is_currently_up
     try:
         # 1. Decode Image
         img_bytes = base64.b64decode(data['image'])
@@ -26,15 +30,30 @@ def handle_video_frame(sid, data):
             results = pose.process(rgb_frame)
 
             if results.pose_landmarks:
-                r_shoulder_y = results.pose_landmarks.landmark[12].y
-                r_wrist_y = results.pose_landmarks.landmark[16].y
-                
-                # Debugging output
-                print(f"Wrist: {r_wrist_y:.2f} | Shoulder: {r_shoulder_y:.2f}")
+                wrist = results.pose_landmarks.landmark[16]
+                shoulder = results.pose_landmarks.landmark[12]
 
-                if r_wrist_y > (r_shoulder_y - 0.1): # Added a "Buffer" of 0.1
-                    print("🙌 ACTION: Right Hand Raised!")
+                # NEW: Check if the hand is actually visible in the frame
+                # If visibility is low (< 0.5), we treat it as "not there"
+                is_visible = wrist.visibility > 0.5
 
+                # Original coordinate check
+                is_above = wrist.x > (shoulder.x - 0.1)
+                # print(f"wrist.y: {wrist.y}, shoulder.y: {shoulder.y}")
+                # FINAL LOGIC: Must be visible AND above shoulder
+                currently_up = is_visible and is_above
+
+                # Only send a message if the state changed to save bandwidth
+                if currently_up != hand_is_currently_up:
+                    hand_is_currently_up = currently_up
+                    status = "up" if currently_up else "down"
+                    sio.emit('game_action', {'action': status})
+                    print(f"State Changed: {status}")
+            else:
+                # If no person is detected at all, force state to down
+                if hand_is_currently_up:
+                    hand_is_currently_up = False
+                    sio.emit('game_action', {'action': 'down'})
     except Exception as e:
         print(f"Error: {e}")
 
