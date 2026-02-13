@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Game Server</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #333; color: white; font-family: sans-serif; text-align: center; }
+        #qr-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+        #qrcode { background: white; padding: 20px; border-radius: 10px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="qr-overlay">
+        <h2>SCAN TO JOIN</h2>
+        <div id="qrcode"></div>
+        <p id="ip-text">Locating server...</p>
+    </div>
+
+    <div id="game-ui">
+        <h1 id="status">READY TO PLAY</h1>
+    </div>
+
+    <script>
+        const socket = io(); // Connects to the server that served this file
+        const qrOverlay = document.getElementById('qr-overlay');
+
+        socket.on('connect', () => {
+            socket.emit('get_ip'); // Ask Python for the local IP
+        });
+
+        socket.on('server_ip', (data) => {
+            document.getElementById('ip-text').innerText = data.ip;
+            new QRCode(document.getElementById("qrcode"), data.ip);
+        });
+
+        // When the phone starts sending video, hide the QR code
+        socket.on('video_frame_received', () => {
+            qrOverlay.classList.add('hidden');
+        });
+
+        socket.on('game_action', (data) => {
+            const body = document.body;
+            if (data.action === 'up') {
+                body.style.backgroundColor = "green";
+            } else {
+                body.style.backgroundColor = "#333";
+            }
+        });
+    </script>
+</body>
+</html>
