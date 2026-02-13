@@ -29,18 +29,18 @@ packages:
     dependency: "direct main"
     description:
       name: camera
-      sha256: dfa8fc5a1adaeb95e7a54d86a5bd56f4bb0e035515354c8ac6d262e35cec2ec8
+      sha256: a005c6b9783d895a3a9808d65d06773d13587e22a186b6fe8ef3801b0d12f8cf
       url: "https://pub.dev"
     source: hosted
-    version: "0.10.6"
-  camera_android:
+    version: "0.11.3+1"
+  camera_android_camerax:
     dependency: transitive
     description:
-      name: camera_android
-      sha256: "50c0d1c4b122163e3d7cdfcd6d4cd8078aac27d0f1cd1e7b3fa69e6b3f06f4b7"
+      name: camera_android_camerax
+      sha256: "8516fe308bc341a5067fb1a48edff0ddfa57c0d3cdcc9dbe7ceca3ba119e2577"
       url: "https://pub.dev"
     source: hosted
-    version: "0.10.10+14"
+    version: "0.6.30"
   camera_avfoundation:
     dependency: transitive
     description:
@@ -240,6 +240,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.17.0"
+  mobile_scanner:
+    dependency: "direct main"
+    description:
+      name: mobile_scanner
+      sha256: d234581c090526676fd8fab4ada92f35c6746e3fb4f05a399665d75a399fb760
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.2.3"
   path:
     dependency: transitive
     description:

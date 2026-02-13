@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:image/image.dart' as img;
 
@@ -9,123 +10,150 @@ void main() async {
   final cameras = await availableCameras();
   runApp(
     MaterialApp(
-      home: GameController(
-        camera: cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-        ),
-      ),
+      theme: ThemeData.dark(),
+      home: GameController(cameras: cameras),
     ),
   );
 }
 
 class GameController extends StatefulWidget {
-  final CameraDescription camera;
-  const GameController({Key? key, required this.camera}) : super(key: key);
+  final List<CameraDescription> cameras;
+  const GameController({super.key, required this.cameras});
 
   @override
-  _GameControllerState createState() => _GameControllerState();
+  State<GameController> createState() => _GameControllerState();
 }
 
 class _GameControllerState extends State<GameController> {
-  late CameraController _controller;
-  late IO.Socket socket;
-  bool isProcessing = false;
+  // Logic & Connection State
   bool isConnected = false;
+  IO.Socket? socket;
+  CameraController? cameraController;
+  final MobileScannerController scannerController = MobileScannerController();
 
-  @override
-  void initState() {
-    super.initState();
-    initSocket();
-    initCamera();
-  }
+  bool isProcessing = false; // Prevents overwhelming the server
 
-  void initSocket() {
-    // REPLACE WITH YOUR IP ADDRESS
-    socket = IO.io(
-      'http://10.0.0.1:5000',
-      IO.OptionBuilder().setTransports(['websocket']).build(),
-    );
+  // 1. THE CONVERSION HELPER (Fixes the "Tiny String" error)
+  String convertImageToBase64(CameraImage image) {
+  try {
+    final int width = image.width;
+    final int height = image.height;
 
-    socket.onConnect((_) {
-      setState(() => isConnected = true);
-      print('Connected to Server');
-    });
+    // Create a new image buffer
+    var imgObj = img.Image(width: width, height: height);
 
-    socket.onDisconnect((_) => setState(() => isConnected = false));
-  }
-
-  void initCamera() {
-    _controller = CameraController(
-      widget.camera,
-      ResolutionPreset.low,
-      enableAudio: false,
-    );
-    _controller.initialize().then((_) {
-      if (!mounted) return;
-
-      _controller.startImageStream((CameraImage image) {
-        if (!isConnected || isProcessing) return;
-        processAndSend(image);
-      });
-      setState(() {});
-    });
-  }
-
-  // This is the heavy lifter
-  void processAndSend(CameraImage image) async {
-    isProcessing = true;
-
-    try {
-      // 1. Convert CameraImage (YUV420) to RGB
-      final int width = image.width;
-      final int height = image.height;
-      final img.Image convertedImage = img.Image(width: width, height: height);
-
-      // Simple pixel copy (Note: This is the bottleneck)
+    // This loop manually fills the image with the 'Y' (brightness) plane
+    // It's a grayscale shortcut that is EXTREMELY fast and works perfectly for AI
+    for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
-        for (int y = 0; y < height; y++) {
-          final pixel = image.planes[0].bytes[y * width + x];
-          convertedImage.setPixelRgba(x, y, pixel, pixel, pixel, 255);
-        }
+        final int pixelColor = image.planes[0].bytes[y * width + x];
+        // Set pixel as grayscale (R=G=B)
+        imgObj.setPixelRgb(x, y, pixelColor, pixelColor, pixelColor);
       }
-
-      // 2. Resize to be VERY small (120px wide) to save bandwidth
-      img.Image smallerImage = img.copyResize(convertedImage, width: 120);
-
-      // 3. Compress to JPG and Base64 encode
-      List<int> jpg = img.encodeJpg(smallerImage, quality: 50);
-      String base64Image = base64Encode(jpg);
-
-      // 4. Send to Python
-      socket.emit('video_frame', {'image': base64Image});
-    } catch (e) {
-      print("Error processing frame: $e");
     }
 
-    // Artificial delay to prevent flooding the network (aiming for ~10 FPS)
-    await Future.delayed(Duration(milliseconds: 100));
-    isProcessing = false;
+    // Resize to 160px width to make it tiny and fast for the network
+    var thumbnail = img.copyResize(imgObj, width: 160);
+
+    // Encode as JPEG
+    final List<int> jpeg = img.encodeJpg(thumbnail, quality: 40);
+    return base64Encode(jpeg);
+  } catch (e) {
+    print("Conversion Error: $e");
+    return "";
+  }
+}
+  // 2. THE HANDSHAKE (Switch from Scanner to Game Camera)
+  void setupConnection(String url) async {
+    print("🔗 Connecting to: $url");
+
+    try {
+      // Stop the QR Scanner immediately
+      await scannerController.stop();
+
+      // Initialize Socket.io
+      socket = IO.io(
+        url,
+        IO.OptionBuilder().setTransports(['websocket']).build(),
+      );
+
+      socket!.connect();
+
+      // Initialize Front Camera
+      final frontCam = widget.cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.front,
+      );
+
+      cameraController = CameraController(
+        frontCam,
+        ResolutionPreset.low,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg, // Helps with compatibility
+      );
+
+      await cameraController!.initialize();
+
+      setState(() {
+        isConnected = true;
+      });
+
+      // 3. THE STREAMING LOOP
+      cameraController!.startImageStream((CameraImage image) {
+        if (!isProcessing && socket != null && socket!.connected) {
+          isProcessing = true;
+
+          String base64Frame = convertImageToBase64(image);
+
+          if (base64Frame.isNotEmpty) {
+            socket!.emit('video_frame', {'image': base64Frame});
+          }
+
+          // Throttle to ~10 frames per second
+          Future.delayed(const Duration(milliseconds: 100), () {
+            isProcessing = false;
+          });
+        }
+      });
+    } catch (e) {
+      print("❌ Setup Error: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_controller.value.isInitialized) return Container();
+    // PHASE 1: SCANNING MODE
+    if (!isConnected) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Scan Server QR")),
+        body: MobileScanner(
+          controller: scannerController,
+          onDetect: (capture) {
+            final List<Barcode> barcodes = capture.barcodes;
+            if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+              setupConnection(barcodes.first.rawValue!);
+            }
+          },
+        ),
+      );
+    }
+
+    // PHASE 2: GAME MODE (Camera Feed)
     return Scaffold(
       body: Stack(
         children: [
-          CameraPreview(_controller),
+          (cameraController != null && cameraController!.value.isInitialized)
+              ? CameraPreview(cameraController!)
+              : const Center(child: CircularProgressIndicator()),
           Positioned(
             top: 50,
             left: 20,
-            child: CircleAvatar(
-              backgroundColor: isConnected ? Colors.green : Colors.red,
-              radius: 10,
-            ),
-          ),
-          Center(
-            child: Text(
-              "Controller Mode",
-              style: TextStyle(color: Colors.white),
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              color: Colors.green,
+              child: const Text(
+                "STREAMING TO SERVER",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
         ],
@@ -135,8 +163,9 @@ class _GameControllerState extends State<GameController> {
 
   @override
   void dispose() {
-    _controller.dispose();
-    socket.dispose();
+    scannerController.dispose();
+    cameraController?.dispose();
+    socket?.dispose();
     super.dispose();
   }
 }
