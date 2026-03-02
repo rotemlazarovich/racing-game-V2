@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -16,6 +17,27 @@ void main() async {
   );
 }
 
+// --- VISUAL GUIDE PAINTER ---
+class SplitLinePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.6) // Translucent white
+      ..strokeWidth = 3.0;
+
+    // Draw vertical line in the exact middle
+    canvas.drawLine(
+      Offset(size.width / 2, 0),
+      Offset(size.width / 2, size.height),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(CustomPainter oldDelegate) => false;
+}
+// ----------------------------
+
 class GameController extends StatefulWidget {
   final List<CameraDescription> cameras;
   const GameController({super.key, required this.cameras});
@@ -25,94 +47,111 @@ class GameController extends StatefulWidget {
 }
 
 class _GameControllerState extends State<GameController> {
-  // Logic & Connection State
   bool isConnected = false;
   IO.Socket? socket;
   CameraController? cameraController;
-  final MobileScannerController scannerController = MobileScannerController();
+  MobileScannerController scannerController = MobileScannerController();
+  String? currentRoomId;
+  bool isProcessing = false;
 
-  bool isProcessing = false; // Prevents overwhelming the server
-
-  // 1. THE CONVERSION HELPER (Fixes the "Tiny String" error)
+  // Optimized image conversion for speed
   String convertImageToBase64(CameraImage image) {
-  try {
-    final int width = image.width;
-    final int height = image.height;
+    try {
+      final int width = image.width;
+      final int height = image.height;
 
-    // Create a new image buffer
-    var imgObj = img.Image(width: width, height: height);
+      // Create image object from raw bytes
+      var imgObj = img.Image(width: width, height: height);
 
-    // This loop manually fills the image with the 'Y' (brightness) plane
-    // It's a grayscale shortcut that is EXTREMELY fast and works perfectly for AI
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final int pixelColor = image.planes[0].bytes[y * width + x];
-        // Set pixel as grayscale (R=G=B)
-        imgObj.setPixelRgb(x, y, pixelColor, pixelColor, pixelColor);
+      // Handle pixel conversion
+      var bytes = image.planes[0].bytes;
+      for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+          final int pixelColor = bytes[y * width + x];
+          imgObj.setPixelRgb(x, y, pixelColor, pixelColor, pixelColor);
+        }
       }
+
+      // Rotate to correct orientation
+      var rotatedImage = img.copyRotate(imgObj, angle: 270);
+
+      // Resize heavily to reduce network payload
+      var thumbnail = img.copyResize(rotatedImage, width: 320);
+
+      // Encode as low-quality JPEG for fastest transmission
+      final List<int> jpeg = img.encodeJpg(thumbnail, quality: 30);
+      return base64Encode(jpeg);
+    } catch (e) {
+      print("Conversion Error: $e");
+      return "";
     }
-
-    // Resize to 160px width to make it tiny and fast for the network
-    var thumbnail = img.copyResize(imgObj, width: 160);
-
-    // Encode as JPEG
-    final List<int> jpeg = img.encodeJpg(thumbnail, quality: 40);
-    return base64Encode(jpeg);
-  } catch (e) {
-    print("Conversion Error: $e");
-    return "";
   }
-}
-  // 2. THE HANDSHAKE (Switch from Scanner to Game Camera)
-  void setupConnection(String url) async {
-    print("🔗 Connecting to: $url");
+
+  void setupConnection(String fullUrl) async {
+    if (isConnected) return;
+    print("🔗 Connecting to: $fullUrl");
 
     try {
-      // Stop the QR Scanner immediately
-      await scannerController.stop();
+      final Uri uri = Uri.parse(fullUrl);
+      currentRoomId = uri.queryParameters['room'];
+      final String baseUrl = "${uri.scheme}://${uri.host}:${uri.port}";
 
-      // Initialize Socket.io
+      await scannerController.stop();
+      await scannerController.dispose();
+
       socket = IO.io(
-        url,
-        IO.OptionBuilder().setTransports(['websocket']).build(),
+        baseUrl,
+        IO.OptionBuilder()
+            .setTransports(['websocket'])
+            .disableAutoConnect()
+            .build(),
       );
 
       socket!.connect();
+      socket!.onConnect((_) {
+        print("✅ Connected. Joining Room: $currentRoomId");
+        socket!.emit('join_room', {'room_id': currentRoomId, 'type': 'mobile'});
+      });
 
-      // Initialize Front Camera
       final frontCam = widget.cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
       );
 
       cameraController = CameraController(
         frontCam,
-        ResolutionPreset.low,
+        ResolutionPreset.low, // Lowest resolution for max speed
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg, // Helps with compatibility
       );
 
       await cameraController!.initialize();
 
-      setState(() {
-        isConnected = true;
+      cameraController!.startImageStream((CameraImage image) {
+        if (isProcessing || socket == null || !socket!.connected) return;
+
+        isProcessing = true;
+
+        Future.microtask(() {
+          try {
+            String base64Frame = convertImageToBase64(image);
+            if (base64Frame.isNotEmpty) {
+              socket!.emit('video_frame', {
+                'image': base64Frame,
+                'room_id': currentRoomId,
+              });
+            }
+          } catch (e) {
+            print("Frame Processing Error: $e");
+          } finally {
+            // Very small delay to throttle requests slightly
+            Future.delayed(const Duration(milliseconds: 30), () {
+              isProcessing = false;
+            });
+          }
+        });
       });
 
-      // 3. THE STREAMING LOOP
-      cameraController!.startImageStream((CameraImage image) {
-        if (!isProcessing && socket != null && socket!.connected) {
-          isProcessing = true;
-
-          String base64Frame = convertImageToBase64(image);
-
-          if (base64Frame.isNotEmpty) {
-            socket!.emit('video_frame', {'image': base64Frame});
-          }
-
-          // Throttle to ~10 frames per second
-          Future.delayed(const Duration(milliseconds: 100), () {
-            isProcessing = false;
-          });
-        }
+      setState(() {
+        isConnected = true;
       });
     } catch (e) {
       print("❌ Setup Error: $e");
@@ -121,8 +160,15 @@ class _GameControllerState extends State<GameController> {
 
   @override
   Widget build(BuildContext context) {
-    // PHASE 1: SCANNING MODE
-    if (!isConnected) {
+    if (currentRoomId != null && !isConnected) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (currentRoomId == null) {
       return Scaffold(
         appBar: AppBar(title: const Text("Scan Server QR")),
         body: MobileScanner(
@@ -137,23 +183,31 @@ class _GameControllerState extends State<GameController> {
       );
     }
 
-    // PHASE 2: GAME MODE (Camera Feed)
+    // Camera view with overlay
     return Scaffold(
+      backgroundColor: Colors.black,
       body: Stack(
         children: [
           (cameraController != null && cameraController!.value.isInitialized)
               ? CameraPreview(cameraController!)
               : const Center(child: CircularProgressIndicator()),
+          
+          // --- OVERLAY LINE ---
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: SplitLinePainter(),
+              ),
+            ),
+          ),
+          // --------------------
+
           Positioned(
-            top: 50,
-            left: 20,
+            top: 50, left: 20,
             child: Container(
               padding: const EdgeInsets.all(8),
-              color: Colors.green,
-              child: const Text(
-                "STREAMING TO SERVER",
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              color: Colors.green.withOpacity(0.7),
+              child: Text("ROOM: $currentRoomId"),
             ),
           ),
         ],
