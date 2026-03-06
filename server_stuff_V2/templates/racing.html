@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Racing Game - Setup</title>
+    <style>
+        body { margin: 0; background: #111; font-family: sans-serif; overflow: hidden; }
+
+        /* Centered QR Overlay */
+        #connection-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background-color: #111;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            color: white;
+        }
+        #connection-overlay img {
+            border: 10px solid white;
+            border-radius: 10px;
+            margin: 20px;
+            width: 250px;
+        }
+
+        /* Debug Status Lights (Top Right) */
+        #debug-panel {
+            position: fixed;
+            top: 20px; right: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.6);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid #444;
+        }
+        .light-container { display: flex; gap: 20px; }
+        .indicator {
+            width: 35px; height: 35px;
+            background: #444;
+            border-radius: 50%;
+            border: 2px solid #666;
+            transition: all 0.2s;
+        }
+        .label { color: white; font-size: 10px; margin-top: 5px; text-align: center; display: block; }
+    </style>
+</head>
+<body>
+
+    <div id="connection-overlay">
+        <h1>Connect Controller</h1>
+        <div style="color: #00ff64; font-size: 1.2rem;">Room: {{ room_id }}</div>
+        {% if qr_data_url %}
+            <img src="{{ qr_data_url }}" alt="QR Code">
+        {% endif %}
+        <p>Scan with Rotem App to start</p>
+    </div>
+
+    <div id="debug-panel">
+        <div class="light-container">
+            <div>
+                <div id="p1-indicator" class="indicator"></div>
+                <span class="label">P1 (LEFT)</span>
+            </div>
+            <div>
+                <div id="p2-indicator" class="indicator"></div>
+                <span class="label">P2 (RIGHT)</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // Set the room ID from Python/Jinja2
+        window.ROOM_ID = "{{ room_id }}";
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

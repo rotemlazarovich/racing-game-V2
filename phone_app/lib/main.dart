@@ -22,7 +22,8 @@ class SplitLinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withOpacity(0.6) // Translucent white
+      ..color = Colors.white
+          .withOpacity(0.6) // Translucent white
       ..strokeWidth = 3.0;
 
     // Draw vertical line in the exact middle
@@ -161,11 +162,7 @@ class _GameControllerState extends State<GameController> {
   @override
   Widget build(BuildContext context) {
     if (currentRoomId != null && !isConnected) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (currentRoomId == null) {
@@ -191,23 +188,28 @@ class _GameControllerState extends State<GameController> {
           (cameraController != null && cameraController!.value.isInitialized)
               ? CameraPreview(cameraController!)
               : const Center(child: CircularProgressIndicator()),
-          
-          // --- OVERLAY LINE ---
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: SplitLinePainter(),
+
+          // --- CONDITIONAL OVERLAY LINE ---
+          // Parse Room ID: if even, show line. If odd, show empty box.
+          if (currentRoomId != null &&
+              int.tryParse(currentRoomId!) != null &&
+              int.parse(currentRoomId!) % 2 == 0)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(painter: SplitLinePainter()),
               ),
             ),
-          ),
-          // --------------------
 
+          // --------------------
           Positioned(
-            top: 50, left: 20,
+            top: 50,
+            left: 20,
             child: Container(
               padding: const EdgeInsets.all(8),
               color: Colors.green.withOpacity(0.7),
-              child: Text("ROOM: $currentRoomId"),
+              child: Text(
+                "ROOM: $currentRoomId (${int.parse(currentRoomId!) % 2 == 0 ? 'Multiplayer' : 'Singleplayer'})",
+              ),
             ),
           ),
         ],

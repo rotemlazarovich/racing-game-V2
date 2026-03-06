@@ -1,72 +1,81 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <title>Split Screen Debug</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: sans-serif; }
-        #setup { position: fixed; top:0; left:0; width:100%; height:100%; background:black; z-index:10; display:flex; flex-direction:column; align-items:center; justify-content:center; color:white; }
-        #qrcode { background: white; padding: 10px; }
+        body { margin: 0; background: #000; color: #fff; font-family: 'Courier New', monospace; overflow: hidden; }
         .viewport { display: flex; width: 100vw; height: 100vh; }
-        .lane { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 40px; color: white; transition: 0.1s; border: 2px solid black; }
-        .down { background: #aa0000; }
-        .up { background: #00aa00; }
+        .lane { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #333; transition: background 0.2s; }
+        .status { font-size: 60px; font-weight: bold; margin-bottom: 30px; }
+        .monitor { background: #111; padding: 20px; border-radius: 10px; width: 85%; border: 2px solid #444; }
+        .param { display: flex; justify-content: space-between; margin: 10px 0; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        .label { color: #888; font-size: 14px; }
+        .value { color: #0f0; font-size: 20px; font-weight: bold; }
+        
+        .active-lane { border-color: #0f0; }
+        .up { background: #002200; }
+        .down { background: #220000; }
+        .searching { color: #555; }
     </style>
 </head>
 <body>
-
-    <div id="setup">
-        <div id="qrcode"></div>
-        <h1>ROOM: <span id="roomid"></span></h1>
+    <div id="setup" style="position:fixed; inset:0; background:#000; z-index:100; display:flex; align-items:center; justify-content:center;">
+        <div id="qrcode" style="background:#fff; padding:10px;"></div>
     </div>
 
     <div class="viewport">
-        <div id="p1" class="lane down">P1 DOWN</div>
-        <div id="p2" class="lane down">P2 DOWN</div>
+        <div id="p1-lane" class="lane">
+            <div id="p1-status" class="status searching">SEARCHING</div>
+            <div class="monitor">
+                <div style="color:#aaa; margin-bottom:15px; text-align:center;">PLAYER 1 (LEFT)</div>
+                <div class="param"><span class="label">VISIBILITY:</span><span id="p1-vis" class="value">0.0000</span></div>
+                <div class="param"><span class="label">PRESENCE:</span><span id="p1-pres" class="value">0.0000</span></div>
+                <div class="param"><span class="label">WRIST Y:</span><span id="p1-wy" class="value">0.0000</span></div>
+                <div class="param"><span class="label">GRACE CLOCK:</span><span id="p1-grace" class="value">OFF</span></div>
+            </div>
+        </div>
+        <div id="p2-lane" class="lane">
+            <div id="p2-status" class="status searching">SEARCHING</div>
+            <div class="monitor">
+                <div style="color:#aaa; margin-bottom:15px; text-align:center;">PLAYER 2 (RIGHT)</div>
+                <div class="param"><span class="label">VISIBILITY:</span><span id="p2-vis" class="value">0.0000</span></div>
+                <div class="param"><span class="label">PRESENCE:</span><span id="p2-pres" class="value">0.0000</span></div>
+                <div class="param"><span class="label">WRIST Y:</span><span id="p2-wy" class="value">0.0000</span></div>
+                <div class="param"><span class="label">GRACE CLOCK:</span><span id="p2-grace" class="value">OFF</span></div>
+            </div>
+        </div>
     </div>
 
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script>
         const socket = io();
-        const roomId = Math.floor(1000 + Math.random() * 9000).toString();
-        document.getElementById('roomid').innerText = roomId;
-
-        new QRCode(document.getElementById("qrcode"), {
-            text: window.location.origin + "/?room=" + roomId,
-            width: 200, height: 200
-        });
-
-        socket.emit('join_room', { room_id: roomId, type: 'web' });
+        let roomId = Math.floor(1000 + Math.random() * 9000).toString();
+        new QRCode(document.getElementById("qrcode"), { text: window.location.origin + "/?room=" + roomId, width: 150, height: 150 });
+        socket.emit('join_room', { room_id: roomId });
 
         socket.on("game_action", (data) => {
-            console.log("RECEIVED:", data); // THIS SHOULD PRINT NOW
-            
-            // Hide setup once data flows
             document.getElementById('setup').style.display = 'none';
+            ['p1', 'p2'].forEach(id => {
+                const p = data[id];
+                const lane = document.getElementById(`${id}-lane`);
+                const status = document.getElementById(`${id}-status`);
+                
+                document.getElementById(`${id}-vis`).innerText = p.vis.toFixed(4);
+                document.getElementById(`${id}-pres`).innerText = p.pres.toFixed(4);
+                document.getElementById(`${id}-wy`).innerText = p.wrist_y ? p.wrist_y.toFixed(4) : "0.0000";
+                document.getElementById(`${id}-grace`).innerText = p.active ? "ACTIVE" : "OFF";
 
-            const p1Div = document.getElementById('p1');
-            const p2Div = document.getElementById('p2');
-
-            // Update P1
-            if(data.p1 === "up") {
-                p1Div.className = "lane up";
-                p1Div.innerText = "P1: UP";
-            } else {
-                p1Div.className = "lane down";
-                p1Div.innerText = "P1: DOWN";
-            }
-
-            // Update P2
-            if(data.p2 === "up") {
-                p2Div.className = "lane up";
-                p2Div.innerText = "P2: UP";
-            } else {
-                p2Div.className = "lane down";
-                p2Div.innerText = "P2: DOWN";
+                if (p.active) {
+                    lane.className = `lane active-lane ${p.state}`;
+                    status.innerText = p.state.toUpperCase();
+                    status.classList.remove('searching');
+                } else {
+                    lane.className = 'lane';
+                    status.innerText = "SEARCHING";
+                    status.classList.add('searching');
                 }
             });
+        });
     </script>
 </body>
 </html>
