@@ -1,5 +1,25 @@
-<div class="panel">
-    <h1>Select Mode for {{ game_id }}</h1>
-    <button onclick="location.href='/play/{{ game_id }}/single'">👤 Singleplayer</button>
-    <button onclick="location.href='/play/{{ game_id }}/multi'">👥 Multiplayer</button>
-</div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Setup - {{ game_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="lobby-container">
+        <h1 style="font-size: 3rem; text-transform: uppercase;">Select Mode for {{ game_id }}</h1>
+        
+        <div class="button-track">
+            <button class="mode-button single-player" onclick="location.href='/play/{{ game_id }}/single'">
+                👤 Singleplayer
+            </button>
+            
+            <button class="mode-button multi-player" onclick="location.href='/play/{{ game_id }}/multi'">
+                👥 Multiplayer
+            </button>
+        </div>
+
+        <p><a href="/" style="color: #888; text-decoration: none; margin-top: 20px; display: block;">← Back to Gallery</a></p>
+    </div>
+</body>
+</html>

@@ -2,41 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rotem – Hand raise</title>
+  <title>Rotem – Game Lobby</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div id="app">
-    <div id="no-room" class="panel">
-      <p>Connect your phone camera and show the display on this screen.</p>
-      <p><a href="{{ url_for('qr_page') }}">Show QR code</a> – scan it with the Rotem app to connect.</p>
-      <p style="margin-top: 1.5rem; color: #888;">Or open a room directly: <code>/room/ROOM_ID</code> or <code>/?room=ROOM_ID</code></p>
+    <div id="no-room" class="panel" style="text-align: center; padding-top: 100px;">
+      <h1>Welcome to Rotem</h1>
+      <p><a href="{{ url_for('qr_page') }}" style="color: #00ff64; font-size: 1.5rem;">Click here to show QR code</a></p>
     </div>
+
     <div id="room-view" class="hidden">
-      <div id="room-header">
-        <span id="room-label"></span>
-        <span id="room-hint" class="hint"></span>
+      <div id="game-menu" style="display: none; text-align: center; padding-top: 50px;">
+        <h1>SELECT YOUR GAME</h1>
+        <button class="mode-button single-player" onclick="location.href='/game/racing?room_id='+window.ROOM_ID">Racing Game</button>
+        <button class="mode-button multi-player" onclick="location.href='/game/skiing?room_id='+window.ROOM_ID">Skiing Game</button>
       </div>
-      <p id="waiting-msg" class="waiting-msg">Waiting for camera… Use the same room on phone and browser. <a id="qr-link" href="">Get QR for this room</a></p>
+
+      <p id="waiting-msg" style="text-align: center; font-size: 1.2rem; color: #888;">Waiting for camera connection...</p>
+      
       <div id="video-container">
-        <div id="left-half" class="half overlay">
-          <div class="frame-indicator"></div>
-          <div class="tint"></div>
-        </div>
-        <div id="split-line"></div>
-        <div id="right-half" class="half overlay">
-          <div class="frame-indicator"></div>
-          <div class="tint"></div>
-        </div>
         <img id="video-feed" alt="Camera feed" />
       </div>
     </div>
   </div>
+
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  <script>
-    window.ROOM_ID = {{ (room_id or '') | tojson }};
-  </script>
+  <script>window.ROOM_ID = {{ (room_id or '') | tojson }};</script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

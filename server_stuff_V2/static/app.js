@@ -1,60 +1,70 @@
-// Initialize Socket connection
 const socket = io();
+const roomId = window.ROOM_ID || "";
+const isMultiplayer = parseInt(roomId) % 2 === 0;
 
-// Ensure the room ID is loaded
-const roomId = window.ROOM_ID || "0000";
+let gameStarted = false;
+let startTimer = 0;
+const REQUIRED_TIME = 2000; // 2 seconds to start
 
 socket.on('connect', () => {
-    console.log("✅ Socket Connected! Joining Room:", roomId);
-    // Tell the server we are a browser in this specific room
-    socket.emit('join_room', { room_id: roomId, type: 'browser' });
+    if (roomId) {
+        console.log("✅ Socket Connected. Joining Room:", roomId);
+        socket.emit('join_room', { room_id: roomId, type: 'browser' });
+    }
 });
 
+// THIS IS THE MAIN DATA LOOP
 socket.on('detection_state', function(data) {
     if (!data) return;
 
-    // --- A. AUTO-HIDE QR CODE ---
-    // If we get any data at all, the phone is connected. Hide the overlay.
-    const overlay = document.getElementById('connection-overlay');
-    if (overlay && overlay.style.display !== 'none') {
-        overlay.style.display = 'none';
-        console.log("📱 Controller connected! Hiding QR.");
+    // 1. Handle Lobby/Overlay Visibility
+    const menu = document.getElementById('game-menu');
+    const wait = document.getElementById('waiting-msg');
+    const conn = document.getElementById('connection-overlay');
+    
+    if (menu) menu.style.display = 'block';
+    if (wait) wait.style.display = 'none';
+    if (conn) conn.style.display = 'none';
+
+    // 2. Update Video Feed (if on the lobby page)
+    const feed = document.getElementById('video-feed');
+    if (feed && data.image) {
+        feed.src = 'data:image/jpeg;base64,' + data.image;
     }
 
-    // --- B. UPDATE INDICATOR LIGHTS ---
-    const p1Light = document.getElementById('p1-indicator');
-    const p2Light = document.getElementById('p2-indicator');
-
-    // Update Player 1 (Left Half)
-    if (p1Light) {
-        if (data.left.handRaised) {
-            p1Light.style.backgroundColor = '#00ff64';
-            p1Light.style.boxShadow = '0 0 15px #00ff64';
+    // 3. Handle the "Ready" Countdown
+    const readyOverlay = document.getElementById('ready-overlay');
+    if (readyOverlay && !gameStarted) {
+        readyOverlay.style.display = 'flex';
+        
+        // Logic: P1 must raise hand. In Multi, both must raise hands.
+        const p1Ready = data.left && data.left.handRaised;
+        const p2Ready = data.right && data.right.handRaised;
+        const readyCondition = isMultiplayer ? (p1Ready && p2Ready) : p1Ready;
+        
+        if (readyCondition) {
+            startTimer += 50; 
+            const progress = (startTimer / REQUIRED_TIME) * 100;
+            document.getElementById('countdown-progress').style.width = progress + '%';
+            
+            if (startTimer >= REQUIRED_TIME) {
+                console.log("🏁 STARTING GAME!");
+                gameStarted = true;
+                readyOverlay.style.display = 'none';
+                // This calls the start function in racing.js
+                if (typeof initCurrentGame === 'function') {
+                    initCurrentGame(isMultiplayer);
+                }
+            }
         } else {
-            p1Light.style.backgroundColor = data.left.person ? '#ffbb00' : '#444';
-            p1Light.style.boxShadow = 'none';
+            startTimer = 0;
+            const bar = document.getElementById('countdown-progress');
+            if (bar) bar.style.width = '0%';
         }
     }
 
-    // Update Player 2 (Right Half)
-    if (p2Light) {
-        if (data.right.handRaised) {
-            p2Light.style.backgroundColor = '#00ff64';
-            p2Light.style.boxShadow = '0 0 15px #00ff64';
-        } else {
-            p2Light.style.backgroundColor = data.right.person ? '#ffbb00' : '#444';
-            p2Light.style.boxShadow = 'none';
-        }
+    // 4. THE BRIDGE: Send data to racing.js every single frame
+    if (gameStarted && typeof updateCurrentGame === 'function') {
+        updateCurrentGame(data);
     }
-
-    // --- C. OPTIONAL VIDEO FEED ---
-    const videoFeed = document.getElementById('video-feed');
-    if (videoFeed && data.image) {
-        videoFeed.src = 'data:image/jpeg;base64,' + data.image;
-    }
-});
-
-// Log any connection errors to help debug
-socket.on('connect_error', (err) => {
-    console.error("❌ Socket Connection Error:", err.message);
 });
