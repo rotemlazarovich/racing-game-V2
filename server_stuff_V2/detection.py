@@ -5,97 +5,55 @@ import numpy as np
 from dataclasses import dataclass
 from collections import defaultdict
 
-# --- GLOBAL INITIALIZATION ---
 _pose = None
 _pose_unavailable = False
 _is_tasks_api = False 
 
-# Landmark Indices
-_L_SHOULDER = 11
-_R_SHOULDER = 12
-_L_WRIST = 15
-_R_WRIST = 16
+_L_SHOULDER, _R_SHOULDER = 11, 12
+_L_WRIST, _R_WRIST = 15, 16
 
-# Room tracking
 _room_histories = {}
 _room_counters = defaultdict(int)
-_DETECT_EVERY_N = 1  # Set to 1 for maximum responsiveness during testing
+_DETECT_EVERY_N = 1 
 
 def _get_pose():
-    """Detects and initializes whichever MediaPipe version is installed."""
     global _pose, _pose_unavailable, _is_tasks_api
     if _pose_unavailable: return None
     if _pose is not None: return _pose
-    
     try:
         import mediapipe as mp
-        # 1. Try New Tasks API (MediaPipe 0.10.0+)
         if hasattr(mp, "tasks"):
             from mediapipe.tasks import python
             from mediapipe.tasks.python import vision
-            
             model_path = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
-            if not os.path.exists(model_path):
-                print("[detection] Downloading Pose Task model...")
-                import urllib.request
-                url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-                urllib.request.urlretrieve(url, model_path)
-
             options = vision.PoseLandmarkerOptions(
                 base_options=python.BaseOptions(model_asset_path=model_path),
-                running_mode=vision.RunningMode.IMAGE
+                running_mode=vision.RunningMode.IMAGE,
+                num_poses=2,
+                min_pose_detection_confidence=0.3, # Add this: helps find people
+                min_pose_presence_confidence=0.3    # Add this: helps keep them tracked
             )
             _pose = vision.PoseLandmarker.create_from_options(options)
             _is_tasks_api = True
-            print("[detection] SUCCESS: Initialized MediaPipe Tasks API.")
             return _pose
-            
-        # 2. Try Legacy API (MediaPipe 0.9.x)
-        _pose = mp.solutions.pose.Pose(
-            static_image_mode=False, 
-            model_complexity=0,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        _pose = mp.solutions.pose.Pose(static_image_mode=False, model_complexity=0)
         _is_tasks_api = False
-        print("[detection] SUCCESS: Initialized MediaPipe Legacy API.")
         return _pose
-
     except Exception as e:
-        print(f"[detection] ERROR: All MediaPipe init methods failed: {e}")
         _pose_unavailable = True
-    return None
+        return None
 
 @dataclass
 class DetectionState:
-    left_person: bool
-    left_hand_raised: bool
-    left_wrist: dict
-    left_shoulder: dict
-    right_person: bool
-    right_hand_raised: bool
-    right_wrist: dict
-    right_shoulder: dict
+    p1: dict
+    p2: dict
 
     def to_dict(self):
-        return {
-            "left": {
-                "person": self.left_person, 
-                "handRaised": self.left_hand_raised,
-                "wrist": self.left_wrist,
-                "shoulder": self.left_shoulder
-            },
-            "right": {
-                "person": self.right_person, 
-                "handRaised": self.right_hand_raised,
-                "wrist": self.right_wrist,
-                "shoulder": self.right_shoulder
-            }
-        }
+        return {"p1": self.p1, "p2": self.p2}
 
-def _default_state():
+def _empty_person():
     pt = {'x': 0.5, 'y': 0.5}
-    return DetectionState(False, False, pt, pt, False, False, pt, pt)
+    return {"active": False, "handRaised": False, "left": {"wrist": pt, "shoulder": pt}, "right": {"wrist": pt, "shoulder": pt}}
 
 def _decode_image(image_b64: str) -> np.ndarray | None:
     try:
@@ -103,60 +61,57 @@ def _decode_image(image_b64: str) -> np.ndarray | None:
         img_bytes = base64.b64decode(data)
         img_np = np.frombuffer(img_bytes, dtype=np.uint8)
         img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-        if img is None: return None
-        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
     except: return None
 
 def process_frame(image_b64: str, room_id: str) -> DetectionState:
     global _room_histories, _room_counters
-    
     pose = _get_pose()
-    if not pose: return _default_state()
-
-    _room_counters[room_id] += 1
-    if _room_counters[room_id] % _DETECT_EVERY_N != 0:
-        return _room_histories.get(room_id, _default_state())
+    if not pose: return DetectionState(_empty_person(), _empty_person())
 
     img = _decode_image(image_b64)
-    if img is None: return _room_histories.get(room_id, _default_state())
+    if img is None: return _room_histories.get(room_id, DetectionState(_empty_person(), _empty_person()))
 
-    # --- DETECTION LOGIC ---
-    landmarks = None
+    # Determine mode BEFORE processing
+    try:
+        is_multi = int(room_id) % 2 == 0
+    except: is_multi = False
+
+    all_poses = []
     if _is_tasks_api:
         from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
         mp_image = Image(image_format=ImageFormat.SRGB, data=img)
         result = pose.detect(mp_image)
-        if result.pose_landmarks and len(result.pose_landmarks) > 0:
-            landmarks = result.pose_landmarks[0]
+        if result.pose_landmarks: all_poses = result.pose_landmarks
     else:
         result = pose.process(img)
-        if result.pose_landmarks:
-            landmarks = result.pose_landmarks.landmark
+        if result.pose_landmarks: all_poses = [result.pose_landmarks.landmark]
 
-    if not landmarks:
-        return _default_state()
+    if not all_poses:
+        return DetectionState(_empty_person(), _empty_person())
 
-    # --- LANDMARK MAPPING (Single Player Logic) ---
-    # We treat the person in the frame as a single entity with two arms.
-    # Note: For Tasks API, landmarks are objects; for Legacy, they have .x/.y
-    try:
-        lw = landmarks[_L_WRIST]
-        ls = landmarks[_L_SHOULDER]
-        rw = landmarks[_R_WRIST]
-        rs = landmarks[_R_SHOULDER]
+    # Format helper - RESTORED TO YOUR ORIGINAL LOGIC
+    def format_p(landmarks):
+        lw, ls, rw, rs = landmarks[_L_WRIST], landmarks[_L_SHOULDER], landmarks[_R_WRIST], landmarks[_R_SHOULDER]
+        is_raised = (rw.y < rs.y) or (lw.y < ls.y)
+        return {
+            "active": True,
+            "handRaised": is_raised,
+            "x": ls.x,
+            "left": {"wrist": {'x': lw.x, 'y': lw.y}, "shoulder": {'x': ls.x, 'y': ls.y}},
+            "right": {"wrist": {'x': rw.x, 'y': rw.y}, "shoulder": {'x': rs.x, 'y': rs.y}}
+        }
 
-        state = DetectionState(
-            left_person=True,
-            left_hand_raised=(lw.y < ls.y),
-            left_wrist={'x': lw.x, 'y': lw.y},
-            left_shoulder={'x': ls.x, 'y': ls.y},
-            right_person=True,
-            right_hand_raised=(rw.y < rs.y),
-            right_wrist={'x': rw.x, 'y': rw.y},
-            right_shoulder={'x': rs.x, 'y': rs.y}
-        )
-        _room_histories[room_id] = state
-        return state
-    except Exception as e:
-        print(f"[detection] Landmark extraction error: {e}")
-        return _default_state()
+    # SINGLE PLAYER LOGIC: If odd room, only look at the first person detected.
+    if not is_multi:
+        p1_data = format_p(all_poses[0])
+        state = DetectionState(p1_data, _empty_person())
+    else:
+        # MULTIPLAYER LOGIC: Sort by X to assign P1 (Left) and P2 (Right)
+        all_poses.sort(key=lambda p: p[_L_SHOULDER].x)
+        p1_data = format_p(all_poses[0])
+        p2_data = format_p(all_poses[1]) if len(all_poses) > 1 else _empty_person()
+        state = DetectionState(p1_data, p2_data)
+
+    _room_histories[room_id] = state
+    return state

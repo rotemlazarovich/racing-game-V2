@@ -4,7 +4,7 @@ const isMultiplayer = parseInt(roomId) % 2 === 0;
 
 let gameStarted = false;
 let startTimer = 0;
-const REQUIRED_TIME = 2000; // 2 seconds to start
+const REQUIRED_TIME = 2000; 
 
 socket.on('connect', () => {
     if (roomId) {
@@ -13,58 +13,95 @@ socket.on('connect', () => {
     }
 });
 
-// THIS IS THE MAIN DATA LOOP
 socket.on('detection_state', function(data) {
     if (!data) return;
 
-    // 1. Handle Lobby/Overlay Visibility
+    // --- 0. UNIVERSAL SORTING (The "Mirror" Fix) ---
+    // We create 'sortedData' immediately so the Timer and Physics see the same orientation.
+    let sortedData = { ...data };
+    if (isMultiplayer && data.p1 && data.p2) {
+        // Person physically on the LEFT (lower X) should be P1.
+        // If p1.x is greater than p2.x, they are swapped, so we fix it.
+        if (data.p1.x > data.p2.x) {
+            sortedData.p1 = data.p2;
+            sortedData.p2 = data.p1;
+        }
+    }
+
+    /* // Connection Debug - Only uncomment if actively troubleshooting
+    if (startTimer > 0 || (sortedData.p1 && sortedData.p1.handRaised)) {
+        console.log("P1 Ready:", !!(sortedData.p1 && sortedData.p1.handRaised), "P2 Ready:", !!(sortedData.p2 && sortedData.p2.handRaised));
+    }
+    */
+
+    // --- 1. UI OVERLAYS ---
+    const noRoom = document.getElementById('no-room');
+    const roomView = document.getElementById('room-view');
     const menu = document.getElementById('game-menu');
     const wait = document.getElementById('waiting-msg');
     const conn = document.getElementById('connection-overlay');
-    
+
+    if (noRoom) noRoom.style.display = 'none';
+    if (roomView) roomView.style.display = 'block';
     if (menu) menu.style.display = 'block';
     if (wait) wait.style.display = 'none';
     if (conn) conn.style.display = 'none';
 
-    // 2. Update Video Feed (if on the lobby page)
+    // Update Video Feed (using sorted data for consistency)
     const feed = document.getElementById('video-feed');
-    if (feed && data.image) {
-        feed.src = 'data:image/jpeg;base64,' + data.image;
+    if (feed && sortedData.image) {
+        feed.src = 'data:image/jpeg;base64,' + sortedData.image;
     }
 
-    // 3. Handle the "Ready" Countdown
+    // --- 2. READY CONDITION ---
+    // Now using sortedData so the bar reacts to the correct physical person
+    const p1Ready = !!(sortedData.p1 && sortedData.p1.handRaised);
+    const p2Ready = isMultiplayer ? !!(sortedData.p2 && sortedData.p2.handRaised) : true;
+
     const readyOverlay = document.getElementById('ready-overlay');
-    if (readyOverlay && !gameStarted) {
-        readyOverlay.style.display = 'flex';
-        
-        // Logic: P1 must raise hand. In Multi, both must raise hands.
-        const p1Ready = data.left && data.left.handRaised;
-        const p2Ready = data.right && data.right.handRaised;
-        const readyCondition = isMultiplayer ? (p1Ready && p2Ready) : p1Ready;
-        
-        if (readyCondition) {
+    const bar = document.getElementById('countdown-progress');
+
+    const p1Finished = (typeof p1 !== 'undefined') && p1.isFinished;
+    const p2Finished = isMultiplayer ? ((typeof p2 !== 'undefined') && p2.isFinished) : true;
+    const raceOver = p1Finished && p2Finished;
+
+    if (readyOverlay) {
+        readyOverlay.style.display = (!gameStarted || raceOver) ? 'flex' : 'none';
+    }
+
+    // --- 3. TIMER LOGIC (Start & Restart) ---
+    if (!gameStarted || raceOver) {
+        if (p1Ready && p2Ready) {
             startTimer += 50; 
-            const progress = (startTimer / REQUIRED_TIME) * 100;
-            document.getElementById('countdown-progress').style.width = progress + '%';
-            
-            if (startTimer >= REQUIRED_TIME) {
-                console.log("🏁 STARTING GAME!");
-                gameStarted = true;
-                readyOverlay.style.display = 'none';
-                // This calls the start function in racing.js
-                if (typeof initCurrentGame === 'function') {
-                    initCurrentGame(isMultiplayer);
-                }
-            }
         } else {
+            if (startTimer > 0) startTimer -= 100; 
+            if (startTimer < 0) startTimer = 0;
+        }
+        
+        const progress = (startTimer / REQUIRED_TIME) * 100;
+        if (bar) bar.style.width = Math.min(progress, 100) + '%';
+
+        if (startTimer >= REQUIRED_TIME) {
+            console.log("🏁 STARTING GAME");
+            gameStarted = true;
             startTimer = 0;
-            const bar = document.getElementById('countdown-progress');
-            if (bar) bar.style.width = '0%';
+            if (typeof initCurrentGame === 'function') {
+                initCurrentGame(isMultiplayer);
+            }
         }
     }
 
-    // 4. THE BRIDGE: Send data to racing.js every single frame
+    // --- 4. THE BRIDGE (Physics) ---
     if (gameStarted && typeof updateCurrentGame === 'function') {
-        updateCurrentGame(data);
+        // We pass the already-sorted data to the game engine
+        updateCurrentGame(sortedData, isMultiplayer);
+    }
+});
+
+window.addEventListener('resize', () => {
+    const canvas = document.getElementById('gameCanvas');
+    if (canvas) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
     }
 });

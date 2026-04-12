@@ -100,27 +100,43 @@ def on_join_room(data):
     join_room(room_id)
     rooms[room_id].add(request.sid)
 
+_processing_rooms = {}
 @socketio.on("video_frame")
 def on_video_frame(data):
+    global _processing_rooms
     room_id = data.get("room_id") or data.get("room")
     image_b64 = data.get("image")
+    
     if not room_id or not image_b64:
         return
-    
-    # Broadcast raw frame to host (for visual feedback)
-    socketio.emit("video_frame", {"image": image_b64}, room=room_id)
-    
+
+    # 1. LAG PREVENTION: If this room is already processing a frame, 
+    # ignore this incoming one to prevent a "traffic jam."
+    if _processing_rooms.get(room_id, False):
+        return 
+
     try:
-        # Process detection (Now returns Shoulder + Wrist)
+        # Mark room as busy
+        _processing_rooms[room_id] = True 
+        
+        # This processes the frame and identifies P1/P2
         state = process_frame(image_b64, room_id)
+        
+        # Save the result to your global room state
         room_state[room_id] = state
+        
+        # Send the detection results back to the game
         socketio.emit("detection_state", state.to_dict(), room=room_id)
+
     except Exception as e:
         print(f"Detection failed for room {room_id}: {e}")
-        # Send a safe "dead" state to prevent client-side JS crashes
-        default_pt = {'x': 0.5, 'y': 0.5}
-        d = {"person": False, "handRaised": False, "wrist": default_pt, "shoulder": default_pt}
-        socketio.emit("detection_state", {"left": d, "right": d}, room=room_id)
+        # Send empty state so the game doesn't crash on null data
+        empty = {"active": False, "handRaised": False, "left": {'x':0.5,'y':0.5}, "right": {'x':0.5,'y':0.5}}
+        socketio.emit("detection_state", {"p1": empty, "p2": empty}, room=room_id)
+
+    finally:
+        # 3. RELEASE: Room is now ready for a new frame
+        _processing_rooms[room_id] = False
 
 if __name__ == "__main__":
     print(f"Server starting on http://{get_local_ip()}:5000")
