@@ -1,5 +1,6 @@
 import base64
 import os
+import sys
 import cv2
 import numpy as np
 from dataclasses import dataclass
@@ -16,6 +17,13 @@ _room_histories = {}
 _room_counters = defaultdict(int)
 _DETECT_EVERY_N = 1 
 
+def get_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
 def _get_pose():
     global _pose, _pose_unavailable, _is_tasks_api
     if _pose_unavailable: return None
@@ -25,7 +33,7 @@ def _get_pose():
         if hasattr(mp, "tasks"):
             from mediapipe.tasks import python
             from mediapipe.tasks.python import vision
-            model_path = os.path.join(os.path.dirname(__file__), 'pose_landmarker_lite.task')
+            model_path = get_path('pose_landmarker_lite.task')
             options = vision.PoseLandmarkerOptions(
                 base_options=python.BaseOptions(model_asset_path=model_path),
                 running_mode=vision.RunningMode.IMAGE,

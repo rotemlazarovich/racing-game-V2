@@ -16,60 +16,53 @@ socket.on('connect', () => {
 socket.on('detection_state', function(data) {
     if (!data) return;
 
-    // --- 0. UNIVERSAL SORTING (The "Mirror" Fix) ---
-    // We create 'sortedData' immediately so the Timer and Physics see the same orientation.
+    // --- 0. HIDE QR CODE ---
+    // Hide the connection overlay as soon as we get the first camera frame
+    const connOverlay = document.getElementById('connection-overlay');
+    if (connOverlay) {
+        connOverlay.style.display = 'none';
+    }
+
+    // --- 1. UNIVERSAL SORTING (Mirror Fix) ---
     let sortedData = { ...data };
     if (isMultiplayer && data.p1 && data.p2) {
-        // Person physically on the LEFT (lower X) should be P1.
-        // If p1.x is greater than p2.x, they are swapped, so we fix it.
-        if (data.p1.x > data.p2.x) {
+        // If P1 is physically to the right (higher X), swap them to fix mirroring
+        if (data.p1.x < data.p2.x) {
             sortedData.p1 = data.p2;
             sortedData.p2 = data.p1;
         }
     }
 
-    /* // Connection Debug - Only uncomment if actively troubleshooting
-    if (startTimer > 0 || (sortedData.p1 && sortedData.p1.handRaised)) {
-        console.log("P1 Ready:", !!(sortedData.p1 && sortedData.p1.handRaised), "P2 Ready:", !!(sortedData.p2 && sortedData.p2.handRaised));
-    }
-    */
-
-    // --- 1. UI OVERLAYS ---
-    const noRoom = document.getElementById('no-room');
-    const roomView = document.getElementById('room-view');
-    const menu = document.getElementById('game-menu');
-    const wait = document.getElementById('waiting-msg');
-    const conn = document.getElementById('connection-overlay');
-
-    if (noRoom) noRoom.style.display = 'none';
-    if (roomView) roomView.style.display = 'block';
-    if (menu) menu.style.display = 'block';
-    if (wait) wait.style.display = 'none';
-    if (conn) conn.style.display = 'none';
-
-    // Update Video Feed (using sorted data for consistency)
+    // --- 2. UI UPDATES ---
     const feed = document.getElementById('video-feed');
     if (feed && sortedData.image) {
         feed.src = 'data:image/jpeg;base64,' + sortedData.image;
     }
 
-    // --- 2. READY CONDITION ---
-    // Now using sortedData so the bar reacts to the correct physical person
+    // --- 3. READY CONDITION & RESTART LOGIC ---
     const p1Ready = !!(sortedData.p1 && sortedData.p1.handRaised);
     const p2Ready = isMultiplayer ? !!(sortedData.p2 && sortedData.p2.handRaised) : true;
 
     const readyOverlay = document.getElementById('ready-overlay');
     const bar = document.getElementById('countdown-progress');
 
+    // Accessing racing.js global variables
     const p1Finished = (typeof p1 !== 'undefined') && p1.isFinished;
     const p2Finished = isMultiplayer ? ((typeof p2 !== 'undefined') && p2.isFinished) : true;
     const raceOver = p1Finished && p2Finished;
 
+    // --- 4. OVERLAY VISIBILITY ---
     if (readyOverlay) {
-        readyOverlay.style.display = (!gameStarted || raceOver) ? 'flex' : 'none';
+        // Only show the HTML overlay for the VERY FIRST start.
+        // Once gameStarted is true, we rely on your racing.js UI.
+        if (!gameStarted) {
+            readyOverlay.style.display = 'flex';
+        } else {
+            readyOverlay.style.display = 'none';
+        }
     }
 
-    // --- 3. TIMER LOGIC (Start & Restart) ---
+    // --- 5. TIMER LOGIC (First Start & Subsequent Restarts) ---
     if (!gameStarted || raceOver) {
         if (p1Ready && p2Ready) {
             startTimer += 50; 
@@ -78,11 +71,13 @@ socket.on('detection_state', function(data) {
             if (startTimer < 0) startTimer = 0;
         }
         
-        const progress = (startTimer / REQUIRED_TIME) * 100;
-        if (bar) bar.style.width = Math.min(progress, 100) + '%';
+        // Update the HTML bar (only visible during the first start)
+        if (bar && !gameStarted) {
+            bar.style.width = Math.min((startTimer / REQUIRED_TIME) * 100, 100) + '%';
+        }
 
         if (startTimer >= REQUIRED_TIME) {
-            console.log("🏁 STARTING GAME");
+            console.log("🏁 GAME INITIALIZED/RESTARTED");
             gameStarted = true;
             startTimer = 0;
             if (typeof initCurrentGame === 'function') {
@@ -91,10 +86,11 @@ socket.on('detection_state', function(data) {
         }
     }
 
-    // --- 4. THE BRIDGE (Physics) ---
+    // --- 6. THE BRIDGE (Physics) ---
     if (gameStarted && typeof updateCurrentGame === 'function') {
-        // We pass the already-sorted data to the game engine
-        updateCurrentGame(sortedData, isMultiplayer);
+        // Send the sorted data and the current startTimer value
+        // You can use (startTimer/REQUIRED_TIME) inside racing.js to animate your finish bar
+        updateCurrentGame(sortedData, isMultiplayer, startTimer / REQUIRED_TIME);
     }
 });
 

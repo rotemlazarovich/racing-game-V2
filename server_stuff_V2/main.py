@@ -1,3 +1,4 @@
+import engineio.async_drivers.threading
 import base64
 import io
 import socket
@@ -48,7 +49,7 @@ def qr_image_data_url(url: str, size: int = 320) -> str | None:
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "rotem-secret"
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 rooms = defaultdict(set)
 room_state = {}
