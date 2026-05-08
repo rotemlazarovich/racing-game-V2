@@ -4,6 +4,7 @@ import io
 import socket
 import random
 from collections import defaultdict
+import time
 
 try:
     import qrcode
@@ -20,6 +21,7 @@ GAMES = [
     {"id": "racing", "name": "Racing Game", "image": "racing.jpg"},
     {"id": "skiing", "name": "Skiing Game", "image": "skiing.jpg"}
 ]
+
 
 def get_local_ip() -> str:
     """Get this machine's LAN IP so the phone can connect."""
@@ -104,40 +106,42 @@ def on_join_room(data):
 _processing_rooms = {}
 @socketio.on("video_frame")
 def on_video_frame(data):
+    LAST_PROCESSED_TIME = 0
+    FRAME_DELAY = 1.0 / 30.0
+    current_time = time.time()
+    start_time = time.time()
+    if current_time - LAST_PROCESSED_TIME < FRAME_DELAY:
+        return 
+        
+    LAST_PROCESSED_TIME = current_time
     global _processing_rooms
     room_id = data.get("room_id") or data.get("room")
     image_b64 = data.get("image")
     
     if not room_id or not image_b64:
         return
-
-    # 1. LAG PREVENTION: If this room is already processing a frame, 
-    # ignore this incoming one to prevent a "traffic jam."
     if _processing_rooms.get(room_id, False):
         return 
 
     try:
-        # Mark room as busy
         _processing_rooms[room_id] = True 
-        
-        # This processes the frame and identifies P1/P2
+
         state = process_frame(image_b64, room_id)
-        
-        # Save the result to your global room state
+
         room_state[room_id] = state
-        
-        # Send the detection results back to the game
+
         socketio.emit("detection_state", state.to_dict(), room=room_id)
 
     except Exception as e:
         print(f"Detection failed for room {room_id}: {e}")
-        # Send empty state so the game doesn't crash on null data
         empty = {"active": False, "handRaised": False, "left": {'x':0.5,'y':0.5}, "right": {'x':0.5,'y':0.5}}
         socketio.emit("detection_state", {"p1": empty, "p2": empty}, room=room_id)
 
     finally:
-        # 3. RELEASE: Room is now ready for a new frame
         _processing_rooms[room_id] = False
+    
+    duration = time.time() - start_time
+    # print(f"⚡ Server processing + emit took: {duration:.4f}s")
 
 if __name__ == "__main__":
     print(f"Server starting on http://{get_local_ip()}:5000")

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -22,11 +23,9 @@ class SplitLinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white
-          .withOpacity(0.6) // Translucent white
+      ..color = Colors.white.withOpacity(0.6)
       ..strokeWidth = 3.0;
 
-    // Draw vertical line in the exact middle
     canvas.drawLine(
       Offset(size.width / 2, 0),
       Offset(size.width / 2, size.height),
@@ -37,7 +36,6 @@ class SplitLinePainter extends CustomPainter {
   @override
   bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
-// ----------------------------
 
 class GameController extends StatefulWidget {
   final List<CameraDescription> cameras;
@@ -55,35 +53,47 @@ class _GameControllerState extends State<GameController> {
   String? currentRoomId;
   bool isProcessing = false;
 
-  // Optimized image conversion for speed
+  // Optimized image conversion for speed and stability
   String convertImageToBase64(CameraImage image) {
+    final stopwatch = Stopwatch()..start();
     try {
+      final Uint8List planeBytes = image.planes[0].bytes;
       final int width = image.width;
       final int height = image.height;
 
-      // Create image object from raw bytes
-      var imgObj = img.Image(width: width, height: height);
+      // 1. Create the container (1-channel for Greyscale)
+      var imgObj = img.Image(width: width, height: height, numChannels: 1);
 
-      // Handle pixel conversion
-      var bytes = image.planes[0].bytes;
-      for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-          final int pixelColor = bytes[y * width + x];
-          imgObj.setPixelRgb(x, y, pixelColor, pixelColor, pixelColor);
+      // 2. THE STABLE MANUAL FILL
+      // We get an iterator that points to the first pixel and move through the image.
+      int byteIndex = 0;
+      for (final pixel in imgObj) {
+        if (byteIndex < planeBytes.length) {
+          // Set the current pixel to the brightness value from the camera
+          pixel.setRgba(
+            planeBytes[byteIndex],
+            planeBytes[byteIndex],
+            planeBytes[byteIndex],
+            255,
+          );
+          byteIndex++;
         }
       }
 
-      // Rotate to correct orientation
-      var rotatedImage = img.copyRotate(imgObj, angle: 270);
+      // 3. Resize (Still sending landscape/sideways to save phone CPU)
+      var thumbnail = img.copyResize(
+        imgObj,
+        width: 280,
+        interpolation: img.Interpolation.nearest,
+      );
 
-      // Resize heavily to reduce network payload
-      var thumbnail = img.copyResize(rotatedImage, width: 320);
+      // 4. Encode to JPEG
+      final List<int> jpeg = img.encodeJpg(thumbnail, quality: 25);
 
-      // Encode as low-quality JPEG for fastest transmission
-      final List<int> jpeg = img.encodeJpg(thumbnail, quality: 30);
+      print("⏱️ Image conversion took: ${stopwatch.elapsedMilliseconds}ms");
       return base64Encode(jpeg);
     } catch (e) {
-      print("Conversion Error: $e");
+      print("❌ Conversion Error: $e");
       return "";
     }
   }
@@ -114,13 +124,19 @@ class _GameControllerState extends State<GameController> {
         socket!.emit('join_room', {'room_id': currentRoomId, 'type': 'mobile'});
       });
 
+      // Confirm join success
+      socket!.on(
+        'joined',
+        (data) => print("🎉 Successfully joined room $currentRoomId"),
+      );
+
       final frontCam = widget.cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
       );
 
       cameraController = CameraController(
         frontCam,
-        ResolutionPreset.low, // Lowest resolution for max speed
+        ResolutionPreset.low,
         enableAudio: false,
       );
 
@@ -137,14 +153,14 @@ class _GameControllerState extends State<GameController> {
             if (base64Frame.isNotEmpty) {
               socket!.emit('video_frame', {
                 'image': base64Frame,
-                'room_id': currentRoomId,
+                'room_id': currentRoomId.toString(),
               });
             }
           } catch (e) {
             print("Frame Processing Error: $e");
           } finally {
-            // Very small delay to throttle requests slightly
-            Future.delayed(const Duration(milliseconds: 30), () {
+            // Throttle to roughly 20 FPS (50ms delay)
+            Future.delayed(const Duration(milliseconds: 50), () {
               isProcessing = false;
             });
           }
@@ -180,7 +196,6 @@ class _GameControllerState extends State<GameController> {
       );
     }
 
-    // Camera view with overlay
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -189,8 +204,6 @@ class _GameControllerState extends State<GameController> {
               ? CameraPreview(cameraController!)
               : const Center(child: CircularProgressIndicator()),
 
-          // --- CONDITIONAL OVERLAY LINE ---
-          // Parse Room ID: if even, show line. If odd, show empty box.
           if (currentRoomId != null &&
               int.tryParse(currentRoomId!) != null &&
               int.parse(currentRoomId!) % 2 == 0)
@@ -200,7 +213,6 @@ class _GameControllerState extends State<GameController> {
               ),
             ),
 
-          // --------------------
           Positioned(
             top: 50,
             left: 20,
