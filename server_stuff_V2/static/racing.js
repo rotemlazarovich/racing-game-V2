@@ -115,7 +115,7 @@ function updatePhysics(p, pData, dt) {
     // 4. SPEED & GRASS (Restored original targetMax and Multipliers)
     let visualRoad = (baseRoadWidth + 800);
     let grassInt = Math.min(Math.max(0, Math.abs(p.x) - visualRoad) / 1000, 1.0);
-    let targetMax = 80 - (30 * grassInt);
+    let targetMax = 100 - (30 * grassInt);
 
     if (!p.isRacing && p.speed > 2) { p.startTime = Date.now(); p.isRacing = true; }
 

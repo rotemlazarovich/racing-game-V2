@@ -16,6 +16,9 @@ _is_tasks_api = False
 
 _L_SHOULDER, _R_SHOULDER = 11, 12
 _L_WRIST, _R_WRIST = 15, 16
+_hand_history = defaultdict(lambda: [False, False]) # To track [P1_Raised, P2_Raised]
+_persistence_counters = defaultdict(lambda: [0, 0])
+SMOOTHING_THRESHOLD = 3
 
 # --- SPEED & STATE GLOBALS ---
 LAST_UPDATE_TIME = {}
@@ -42,7 +45,7 @@ def _get_pose():
         options = vision.PoseLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path=model_path),
             running_mode=vision.RunningMode.IMAGE,
-            num_poses=1, 
+            num_poses=2,  # CRITICAL: Allow 2 people in one frame
             min_pose_detection_confidence=0.4,
             min_pose_presence_confidence=0.4,
             min_tracking_confidence=0.4
@@ -51,7 +54,7 @@ def _get_pose():
         _is_tasks_api = True
         return _pose
     except Exception as e:
-        print(f"MediaPipe Setup Error: {e}")
+        print(f"MediaPipe Error: {e}")
         _pose_unavailable = True
         return None
 
@@ -87,20 +90,10 @@ def _decode_image(image_b64: str) -> np.ndarray | None:
         print(f"Decode Error: {e}")
         return None
 
-def _adjust_coords(data, scale_x, offset_x):
-    """ Corrects coordinates for split-screen and calculates body width """
-    for side in ['left', 'right']:
-        data[side]['wrist']['x'] = (data[side]['wrist']['x'] * scale_x) + offset_x
-        data[side]['shoulder']['x'] = (data[side]['shoulder']['x'] * scale_x) + offset_x
-    
-    data['x'] = (data['left']['shoulder']['x'] + data['right']['shoulder']['x']) / 2
-    data['width'] = abs(data['left']['shoulder']['x'] - data['right']['shoulder']['x'])
-    return data
-
 def format_p(landmarks):
     """ Extracts key points and checks for raised hands """
     lw, ls, rw, rs = landmarks[_L_WRIST], landmarks[_L_SHOULDER], landmarks[_R_WRIST], landmarks[_R_SHOULDER]
-    is_raised = (rw.y < rs.y - 0.05) or (lw.y < ls.y - 0.05)
+    is_raised = (rw.y < rs.y + 0.1) and (lw.y < ls.y + 0.1)
     
     return {
         "active": True,
@@ -110,66 +103,109 @@ def format_p(landmarks):
         "right": {"wrist": {'x': rw.x, 'y': rw.y}, "shoulder": {'x': rs.x, 'y': rs.y}}
     }
 
+_presence_counters = defaultdict(lambda: [0, 0]) # [P1_frames, P2_frames]
+PRESENCE_GRACE_PERIOD = 5 # How many frames to "remember" a missing player
+
 def process_frame(image_b64: str, room_id: str) -> DetectionState:
-    global LAST_UPDATE_TIME, _room_histories
+    global LAST_UPDATE_TIME, _room_histories, _presence_counters
     
-    # 1. FRAME RATE LIMITER
-    now = time.time()
-    last_time = LAST_UPDATE_TIME.get(room_id, 0)
-    if (now - last_time) < FRAME_RATE_LIMIT:
-        return _room_histories.get(room_id, DetectionState(_empty_person(), _empty_person()))
-    
-    LAST_UPDATE_TIME[room_id] = now
     pose = _get_pose()
     img = _decode_image(image_b64)
-    
     if img is None or not pose: 
-        return DetectionState(_empty_person(), _empty_person())
-
-    # Detect if room is multiplayer
-    try:
-        # Assuming even room IDs are multi, or you have a specific naming convention
-        is_multi = int(room_id) % 2 == 0
-    except: 
-        is_multi = False
+        return _room_histories.get(room_id, DetectionState(_empty_person(), _empty_person()))
 
     from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
+    mp_img = Image(image_format=ImageFormat.SRGB, data=img)
+    result = pose.detect(mp_img)
 
-    if is_multi:
-        h, w, _ = img.shape
-        mid = w // 2
-        img_left = img[:, :mid]
-        img_right = img[:, mid:]
-        
-        # P1
-        mp_p1 = Image(image_format=ImageFormat.SRGB, data=img_left)
-        res1 = pose.detect(mp_p1)
-        p1_data = _empty_person()
-        if res1.pose_landmarks:
-            p1_raw = format_p(res1.pose_landmarks[0])
-            p1_data = _adjust_coords(p1_raw, scale_x=0.5, offset_x=0.0)
+    # Get last known state to compare
+    last_state = _room_histories.get(room_id, DetectionState(_empty_person(), _empty_person()))
+    
+    raw_detected = []
+    if result.pose_landmarks:
+        for landmarks in result.pose_landmarks:
+            p = format_p(landmarks)
+            p['real_width'] = abs(p['left']['shoulder']['x'] - p['right']['shoulder']['x'])
+            raw_detected.append(p)
 
-        # P2
-        mp_p2 = Image(image_format=ImageFormat.SRGB, data=img_right)
-        res2 = pose.detect(mp_p2)
-        p2_data = _empty_person()
-        if res2.pose_landmarks:
-            p2_raw = format_p(res2.pose_landmarks[0])
-            p2_data = _adjust_coords(p2_raw, scale_x=0.5, offset_x=0.5)
-            
-        state = DetectionState(p1_data, p2_data)
+    # Sort candidates by Camera-X (Left to Right)
+    raw_detected.sort(key=lambda p: p['x'])
+
+    # Temporary holders for this frame
+    current_p1 = _empty_person()
+    current_p2 = _empty_person()
+
+    # --- INTELLIGENT ASSIGNMENT ---
+    if len(raw_detected) >= 2:
+        # Best case: We see both. 
+        # Camera Left (idx 0) -> Player 2 | Camera Right (idx 1) -> Player 1
+        current_p2 = _prepare_player(raw_detected[0], scale_x=0.5, offset_x=0.5)
+        current_p1 = _prepare_player(raw_detected[1], scale_x=0.5, offset_x=0.0)
+        _presence_counters[room_id] = [PRESENCE_GRACE_PERIOD, PRESENCE_GRACE_PERIOD]
+
+    elif len(raw_detected) == 1:
+        # Only one person seen. Use X position to guess who it is.
+        lone_person = raw_detected[0]
+        if lone_person['x'] < 0.5: # On the left side of camera
+            current_p2 = _prepare_player(lone_person, scale_x=0.5, offset_x=0.5)
+            _presence_counters[room_id][1] = PRESENCE_GRACE_PERIOD # Reset P2 counter
+            # Keep P1 alive from memory
+            current_p1 = last_state.p1 
+        else: # On the right side of camera
+            current_p1 = _prepare_player(lone_person, scale_x=0.5, offset_x=0.0)
+            _presence_counters[room_id][0] = PRESENCE_GRACE_PERIOD # Reset P1 counter
+            # Keep P2 alive from memory
+            current_p2 = last_state.p2
     else:
-        # SINGLE PLAYER FIX: Ensure p1_data is fully populated and adjusted
-        mp_img = Image(image_format=ImageFormat.SRGB, data=img)
-        res = pose.detect(mp_img)
-        if res.pose_landmarks:
-            p1_raw = format_p(res.pose_landmarks[0])
-            # Call adjust_coords with scale 1.0 to get the 'width' property!
-            p1_data = _adjust_coords(p1_raw, scale_x=1.0, offset_x=0.0)
-        else:
-            p1_data = _empty_person()
-            
-        state = DetectionState(p1_data, _empty_person())
+        # No one seen? Use last known state for both
+        current_p1 = last_state.p1
+        current_p2 = last_state.p2
 
+    # --- APPLY GRACE PERIOD ---
+    # If the counter for a player hits 0, they finally become "inactive"
+    for i, p_data in enumerate([current_p1, current_p2]):
+        if _presence_counters[room_id][i] > 0:
+            _presence_counters[room_id][i] -= 1
+            p_data['active'] = True # Force active during grace period
+        else:
+            p_data['active'] = False
+
+    # Apply the hand-raised smoothing we built earlier
+    final_p1 = _apply_smoothing(current_p1, room_id, 0)
+    final_p2 = _apply_smoothing(current_p2, room_id, 1)
+
+    state = DetectionState(final_p1, final_p2)
     _room_histories[room_id] = state
     return state
+
+def _prepare_player(person, scale_x, offset_x):
+    """ Scales X for steering, but keeps the TRUE width for physics """
+    for side in ['left', 'right']:
+        # Scale the X for steering logic
+        person[side]['wrist']['x'] = (person[side]['wrist']['x'] * scale_x) + offset_x
+        person[side]['shoulder']['x'] = (person[side]['shoulder']['x'] * scale_x) + offset_x
+    
+    # We set the 'x' center for the game renderer
+    person['x'] = (person['left']['shoulder']['x'] + person['right']['shoulder']['x']) / 2
+    
+    # IMPORTANT: We use the real_width so P2 doesn't lose speed!
+    person['width'] = person.get('real_width', 0.2) 
+    return person
+
+def _apply_smoothing(p_data, room_id, p_idx):
+    """ Prevents the loading bar from flickering if a frame is dropped """
+    global _persistence_counters
+    
+    current_raised = p_data.get('handRaised', False)
+    
+    if current_raised:
+        _persistence_counters[room_id][p_idx] = SMOOTHING_THRESHOLD
+        p_data['handRaised'] = True
+    else:
+        if _persistence_counters[room_id][p_idx] > 0:
+            _persistence_counters[room_id][p_idx] -= 1
+            p_data['handRaised'] = True # Keep it raised during grace period
+        else:
+            p_data['handRaised'] = False
+            
+    return p_data

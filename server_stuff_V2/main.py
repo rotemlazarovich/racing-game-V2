@@ -103,45 +103,39 @@ def on_join_room(data):
     join_room(room_id)
     rooms[room_id].add(request.sid)
 
+LAST_PROCESSED_TIMES = {} 
 _processing_rooms = {}
+FRAME_DELAY = 1.0 / 30.0
+
 @socketio.on("video_frame")
 def on_video_frame(data):
-    LAST_PROCESSED_TIME = 0
-    FRAME_DELAY = 1.0 / 30.0
-    current_time = time.time()
-    start_time = time.time()
-    if current_time - LAST_PROCESSED_TIME < FRAME_DELAY:
-        return 
-        
-    LAST_PROCESSED_TIME = current_time
-    global _processing_rooms
+    global LAST_PROCESSED_TIMES, _processing_rooms
+    
     room_id = data.get("room_id") or data.get("room")
     image_b64 = data.get("image")
-    
     if not room_id or not image_b64:
         return
+
+    current_time = time.time()
+    last_time = LAST_PROCESSED_TIMES.get(room_id, 0)
+
+    # 1. Correct Rate Limiting
+    if current_time - last_time < FRAME_DELAY:
+        return
+    
+    # 2. Don't drop frames if we are already processing this room
     if _processing_rooms.get(room_id, False):
         return 
 
     try:
         _processing_rooms[room_id] = True 
-
         state = process_frame(image_b64, room_id)
-
-        room_state[room_id] = state
-
+        LAST_PROCESSED_TIMES[room_id] = time.time()
         socketio.emit("detection_state", state.to_dict(), room=room_id)
-
     except Exception as e:
-        print(f"Detection failed for room {room_id}: {e}")
-        empty = {"active": False, "handRaised": False, "left": {'x':0.5,'y':0.5}, "right": {'x':0.5,'y':0.5}}
-        socketio.emit("detection_state", {"p1": empty, "p2": empty}, room=room_id)
-
+        print(f"Detection error: {e}")
     finally:
         _processing_rooms[room_id] = False
-    
-    duration = time.time() - start_time
-    # print(f"⚡ Server processing + emit took: {duration:.4f}s")
 
 if __name__ == "__main__":
     print(f"Server starting on http://{get_local_ip()}:5000")
