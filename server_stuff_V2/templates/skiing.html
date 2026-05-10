@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Skiing</title>
+    <style>
+        #connection-overlay, #ready-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            text-align: center;
+        }
+
+        /* The Progress Bar Styling */
+        #countdown-bar {
+            width: 300px;
+            height: 20px;
+            background: #444;
+            border-radius: 10px;
+            margin-top: 20px;
+            overflow: hidden;
+            border: 2px solid #fff;
+        }
+
+        #countdown-progress {
+            width: 0%;
+            height: 100%;
+            background: #00ff64;
+            transition: width 0.1s linear;
+        }
+
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+    <div id="connection-overlay">
+        <h1 style="color: black;">SCAN TO SKI</h1>
+        <div id="qrcode">
+            <img src="{{ qr_data_url }}" alt="QR Code">
+        </div>
+    </div>
+
+    <script>
+        window.ROOM_ID = "{{ room_id }}";
+    </script>
+
+    <div id="ready-overlay" style="display:none;">
+        <h1 id="ready-status">RAISE HANDS TO START</h1>
+        <div id="countdown-bar">
+            <div id="countdown-progress"></div>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+
+    <script src="/static/skiing.js"></script>
+    <script src="/static/app.js"></script>
+
+</body>
+</html>

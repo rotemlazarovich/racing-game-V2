@@ -69,7 +69,9 @@ socket.on('detection_state', function(data) {
         }
     }
 
-    if (gameStarted) updateCurrentGame(data, isMultiplayer);
+    if (gameStarted && typeof updateCurrentGame === "function") {
+    updateCurrentGame(data, isMultiplayer);
+    }
 });
 
 window.addEventListener('resize', () => {

@@ -5,10 +5,7 @@ import cv2
 import numpy as np
 from dataclasses import dataclass
 from collections import defaultdict
-import time
-
-# Note: socketio is usually handled by the main server script
-import socketio
+import math
 
 _pose = None
 _pose_unavailable = False
@@ -16,6 +13,8 @@ _is_tasks_api = False
 
 _L_SHOULDER, _R_SHOULDER = 11, 12
 _L_WRIST, _R_WRIST = 15, 16
+_NOSE = 0
+_L_HIP, _R_HIP = 23, 24
 _hand_history = defaultdict(lambda: [False, False]) # To track [P1_Raised, P2_Raised]
 _persistence_counters = defaultdict(lambda: [0, 0])
 SMOOTHING_THRESHOLD = 3
@@ -71,8 +70,9 @@ def _empty_person():
     pt = {'x': 0.5, 'y': 0.5}
     return {
         "active": False, 
+        "scale": 1.0,
         "handRaised": False, 
-        "width": 0.2, # Baseline width
+        "width": 0.2,
         "x": 0.5,
         "left": {"wrist": pt, "shoulder": pt}, 
         "right": {"wrist": pt, "shoulder": pt}
@@ -91,16 +91,37 @@ def _decode_image(image_b64: str) -> np.ndarray | None:
         return None
 
 def format_p(landmarks):
-    """ Extracts key points and checks for raised hands """
-    lw, ls, rw, rs = landmarks[_L_WRIST], landmarks[_L_SHOULDER], landmarks[_R_WRIST], landmarks[_R_SHOULDER]
-    is_raised = (rw.y < rs.y + 0.1) and (lw.y < ls.y + 0.1)
+    # 1. RACING DATA (Wrists & Shoulders)
+    lw, ls = landmarks[_L_WRIST], landmarks[_L_SHOULDER]
+    rw, rs = landmarks[_R_WRIST], landmarks[_R_SHOULDER]
     
+    # Racing Hand Raise (Lenient +0.1)
+    hand_raised = (rw.y < rs.y + 0.1) or (lw.y < ls.y + 0.1)
+    # Racing Width (Shoulder to Shoulder)
+    shoulder_width = abs(ls.x - rs.x)
+
+    # 2. SKIING DATA (Nose & Hips)
+    nose = landmarks[_NOSE]
+    l_hip, r_hip = landmarks[_L_HIP], landmarks[_R_HIP]
+    mid_hip_x = (l_hip.x + r_hip.x) / 2
+    mid_hip_y = (l_hip.y + r_hip.y) / 2
+    
+    # Calculate Lean Angle
+    # atan2(x_diff, y_diff). We use -dy because Y increases downwards.
+    dx = nose.x - mid_hip_x
+    dy = nose.y - mid_hip_y
+    lean_angle = dx
+
     return {
         "active": True,
-        "handRaised": is_raised,
-        "x": ls.x,
+        "x": mid_hip_x, # Center of gravity
+        "handRaised": hand_raised,
+        "width": shoulder_width,
+        "leanAngle": lean_angle,
         "left": {"wrist": {'x': lw.x, 'y': lw.y}, "shoulder": {'x': ls.x, 'y': ls.y}},
-        "right": {"wrist": {'x': rw.x, 'y': rw.y}, "shoulder": {'x': rs.x, 'y': rs.y}}
+        "right": {"wrist": {'x': rw.x, 'y': rw.y}, "shoulder": {'x': rs.x, 'y': rs.y}},
+        "nose": {'x': nose.x, 'y': nose.y},
+        "hips": {'x': mid_hip_x, 'y': mid_hip_y}
     }
 
 _presence_counters = defaultdict(lambda: [0, 0]) # [P1_frames, P2_frames]
@@ -137,29 +158,24 @@ def process_frame(image_b64: str, room_id: str) -> DetectionState:
 
     # --- INTELLIGENT ASSIGNMENT ---
     if len(raw_detected) >= 2:
-        # Best case: We see both. 
-        # Camera Left (idx 0) -> Player 2 | Camera Right (idx 1) -> Player 1
-        current_p2 = _prepare_player(raw_detected[0], scale_x=0.5, offset_x=0.5)
-        current_p1 = _prepare_player(raw_detected[1], scale_x=0.5, offset_x=0.0)
-        _presence_counters[room_id] = [PRESENCE_GRACE_PERIOD, PRESENCE_GRACE_PERIOD]
+            # MULTI-PLAYER: Split the camera 50/50
+            current_p2 = _prepare_player(raw_detected[0], scale_x=0.5, offset_x=0.5)
+            current_p2['scale'] = 0.5
+            current_p1 = _prepare_player(raw_detected[1], scale_x=0.5, offset_x=0.0)
+            current_p1['scale'] = 0.5
+            _presence_counters[room_id] = [PRESENCE_GRACE_PERIOD, PRESENCE_GRACE_PERIOD]
 
     elif len(raw_detected) == 1:
-        # Only one person seen. Use X position to guess who it is.
+        # SINGLE-PLAYER: Assign the solo player to P1 with the FULL coordinate range
+        # This allows you to stand anywhere and move across the whole screen.
         lone_person = raw_detected[0]
-        if lone_person['x'] < 0.5: # On the left side of camera
-            current_p2 = _prepare_player(lone_person, scale_x=0.5, offset_x=0.5)
-            _presence_counters[room_id][1] = PRESENCE_GRACE_PERIOD # Reset P2 counter
-            # Keep P1 alive from memory
-            current_p1 = last_state.p1 
-        else: # On the right side of camera
-            current_p1 = _prepare_player(lone_person, scale_x=0.5, offset_x=0.0)
-            _presence_counters[room_id][0] = PRESENCE_GRACE_PERIOD # Reset P1 counter
-            # Keep P2 alive from memory
-            current_p2 = last_state.p2
-    else:
-        # No one seen? Use last known state for both
-        current_p1 = last_state.p1
-        current_p2 = last_state.p2
+        current_p1 = _prepare_player(lone_person, scale_x=1.0, offset_x=0.0)
+        current_p1['scale'] = 1.0
+        _presence_counters[room_id][0] = PRESENCE_GRACE_PERIOD
+        
+        # P2 stays empty
+        current_p2 = _empty_person()
+        current_p2['scale'] = 1.0
 
     # --- APPLY GRACE PERIOD ---
     # If the counter for a player hits 0, they finally become "inactive"
@@ -179,18 +195,21 @@ def process_frame(image_b64: str, room_id: str) -> DetectionState:
     return state
 
 def _prepare_player(person, scale_x, offset_x):
-    """ Scales X for steering, but keeps the TRUE width for physics """
+    """ Scales X for split-screen compatibility across ALL points """
     for side in ['left', 'right']:
-        # Scale the X for steering logic
         person[side]['wrist']['x'] = (person[side]['wrist']['x'] * scale_x) + offset_x
         person[side]['shoulder']['x'] = (person[side]['shoulder']['x'] * scale_x) + offset_x
     
-    # We set the 'x' center for the game renderer
-    person['x'] = (person['left']['shoulder']['x'] + person['right']['shoulder']['x']) / 2
+    # CRITICAL FIX 1: Scale the nose so Skiing lean math works properly
+    person['nose']['x'] = (person['nose']['x'] * scale_x) + offset_x
     
-    # IMPORTANT: We use the real_width so P2 doesn't lose speed!
+    # CRITICAL FIX 2: Scale the waist (hips) center for proper steering 
+    person['x'] = (person['hips']['x'] * scale_x) + offset_x
+    
     person['width'] = person.get('real_width', 0.2) 
     return person
+
+
 
 def _apply_smoothing(p_data, room_id, p_idx):
     """ Prevents the loading bar from flickering if a frame is dropped """

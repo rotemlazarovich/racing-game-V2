@@ -84,8 +84,11 @@ def game_racing():
 
 @app.route("/game/skiing")
 def game_skiing():
-    room_id = request.args.get("room_id")
-    return render_template("skiing.html", room_id=room_id)
+    room_id = request.args.get("room_id", "0000")
+    host = get_local_ip()
+    url = f"http://{host}:5000?room={room_id}"
+    qr_data = qr_image_data_url(url)
+    return render_template("skiing.html", room_id=room_id, qr_data_url=qr_data, url=url)
 
 @app.route("/qr")
 def qr_page():
